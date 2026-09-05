@@ -46,7 +46,7 @@
 
 ### 方式二：仓库内一键安装（Termux 里执行）
 ```sh
-git clone <本仓库> && cd alarmd
+git clone https://github.com/VIIII4/termux-alarmd && cd termux-alarmd
 bash install.sh            # 部署模块 + alarm CLI（+ todo 集成，装前自动备份）
 alarm daemon start         # 不重启立即启用
 ```
