@@ -1,6 +1,6 @@
 id=alarmd
 name=Termux RTC Alarm Daemon
-version=v1.1.0
-versionCode=2
+version=v1.2.0
+versionCode=3
 author=alarmd contributors
 description=闹钟守护：内核 RTC wakealarm 定时唤醒 + wake_lock 保持响铃，效果层经 run-as com.termux 走 Termux:API。数据在 /data/adb/alarmd，Termux 侧用 alarm 命令管理。

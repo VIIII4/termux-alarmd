@@ -60,7 +60,8 @@ alarm set 07:30 daily 上班          # daily | workdays | weekend | 1,3,5 | onc
 alarm set 21:00 喝水                 # 单次，下一次 21:00
 alarm list                          # ← 标记下一次触发
 alarm snooze 10                     # 贪睡 10 分钟
-alarm stop                          # 停铃（任意路径可用）
+alarm stop                          # 停止当前响铃
+alarm stop <id>                     # 跳过该闹钟的下一次触发（之后自动恢复；once 则取消）
 alarm test                          # 试铃（低音量）
 alarm sound /system/media/audio/alarms/Ding.ogg
 alarm status                        # 守护/RTC/下一次/log

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.0 (2026-09-08)
+- `alarm stop <id>`：跳过指定闹钟的下一次触发（写 fired 标记，守护自动重排；once 直接取消）
+- `alarm stop`（无参）如实报告——不再无铃也打“已停止”
+- CLI 审计日志：set/rm/skip/snooze/stop/kill 全部以 `[CLI]` 前缀写入 /data/adb/alarmd/log，与守护日志同文件可对账
+
 ## v1.1.0 (2026-09-05)
 - exec 型闹钟：`xdaily`/`xonce` 到点不响铃，以 Termux 用户身份执行命令
 - todo 工具集成：alarms.json 单向同步为 `t<id>` 行；每日任务提醒钩子（digest）

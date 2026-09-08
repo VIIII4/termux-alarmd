@@ -5,7 +5,7 @@
 #   alarm list                 列出闹钟（标记下一次）
 #   alarm rm <id>              删除
 #   alarm snooze [分钟]        贪睡（默认 10 分钟）
-#   alarm stop                 停止响铃
+#   alarm stop [id]            停止响铃；带 id=跳过该闹钟的下一次触发
 #   alarm kill                 紧急全停（守护/RTC/wakelock/声音/通知）
 #   alarm test                 试铃（音量/通知/按钮）
 #   alarm sound [路径]         查看/设置铃声（默认 /system/media/audio/alarms/Awoken.ogg）
@@ -19,6 +19,12 @@ ALARMS=$D/alarms
 RUN=$D/run
 
 s() { su -c "$1"; }          # root 执行（读写 /data/adb 与 sysfs）
+audit() {                     # CLI 审计日志 → 与守护同 log 可对账
+    local msg ts
+    msg=${1//\'/}; msg=${msg//\"/}
+    ts=$(date '+%m-%d %H:%M:%S')
+    s "echo '$ts [CLI] $msg' >> '$D/log'"
+}
 die() { echo "错误: $*" >&2; exit 1; }
 
 daemon_alive() {
@@ -68,6 +74,7 @@ cmd_set() {
 
     id="a$(date +%H%M%S)"
     s "echo '$id|$t|$days|$label' >> '$ALARMS'" || die "写入失败（su 授权?）"
+    audit "set $id $t $days $label"
     echo "已添加: $t $(days_zh "$days") ${label:+「$label」}  (id=$id)"
 
     # 算下一次响给用户看（termux 的 GNU date 直接可用）
@@ -112,6 +119,7 @@ cmd_list() {
 cmd_rm() {
     [ -n "${1:-}" ] || die "用法: alarm rm <id>（id 见 alarm list）"
     s "sed -i '/^$1|/d' '$ALARMS'" || die "删除失败"
+    audit "rm $1"
     echo "已删除 $1"
 }
 
@@ -123,29 +131,83 @@ cmd_snooze() {
     e=$(( $(date +%s) + n * 60 ))
     id="s$(date +%s)"
     s "echo '$id|$e|once|贪睡' >> '$ALARMS'"
+    audit "snooze +${n}m ($id → $(date -d "@$e" '+%H:%M'))"
     echo "贪睡 $n 分钟（$(date -d "@$e" '+%H:%M') 响）"
     check_daemon
 }
 
 # ----------------------------------------------------------------- stop --
-cmd_stop() {
-    # 先取响铃 id 再 kill（kill 的 su 命令会删 firing，顺序反了通知就永远清不掉）
+next_due_of() {  # 指定 id 的下一次触发 epoch（与守护同规则，忽略 fired 标记）
+    local now day0
+    now=$(date +%s)
+    day0=$(date -d 'today 00:00' +%s)
+    awk -F'|' -v id="$1" -v now="$now" -v day0="$day0" '
+        $1 == id {
+            if ($2 ~ /^[0-9]+$/) { print $2; exit }
+            split($2, a, ":"); sod = a[1]*3600 + a[2]*60
+            for (off = 0; off < 8; off++) {
+                wd = (int(day0/86400) + 3 + off) % 7 + 1
+                sp = $3; ok = 0
+                if (sp == "daily" || sp == "once" || sp == "xdaily" || sp == "xonce") ok = 1
+                else if (sp == "workdays") ok = (wd <= 5)
+                else if (sp == "weekend") ok = (wd >= 6)
+                else if (sp ~ /^[0-9,]+$/) { m = split(sp, L, ","); for (i = 1; i <= m; i++) if (L[i]+0 == wd) ok = 1 }
+                if (ok) { cand = day0 + off*86400 + sod; if (cand > now) { print cand; exit } }
+            }
+        }' <(s "cat '$ALARMS' 2>/dev/null")
+}
+
+cmd_stop_ring() {  # 停止当前响铃（如实报告，不再无铃也打“已停止”）
     local rp fid
     rp=$(s "cat '$RUN/ring.pid' 2>/dev/null")
     fid=$(s "cat '$RUN/firing' 2>/dev/null")
+    if [ -z "$rp" ] && [ -z "$fid" ]; then
+        echo "当前没有响铃。（取消某个闹钟: alarm stop <id>；删除: alarm rm <id>）"
+        return 0
+    fi
     [ -n "$rp" ] && s "kill '$rp' 2>/dev/null; rm -f '$RUN/ring.pid' '$RUN/firing'"
     s "touch '$RUN/stop'" 2>/dev/null
     termux-media-player stop >/dev/null 2>&1
-    local fid
-    fid=$(s "cat '$RUN/firing' 2>/dev/null")
     [ -n "$fid" ] && termux-notification-remove "alarm-$fid" >/dev/null 2>&1
     termux-notification-remove alarm-test >/dev/null 2>&1
-    # 兜底：清掉一切 alarm- 开头的残留响铃通知（需通知使用权权限）
     timeout 8 termux-notification-list 2>/dev/null \
         | grep -o '"tag": "alarm-[^"]*"' \
         | sed 's/"tag": "//; s/"$//' \
         | while read -r t; do termux-notification-remove "$t" >/dev/null 2>&1; done
-    echo "已停止"
+    audit "stop-ring [$fid]"
+    echo "已停止响铃 [$fid]"
+}
+
+cmd_skip() {  # alarm stop <id>：跳过该闹钟的下一次触发（之后自动恢复）
+    local id=$1 line spec e
+    [[ "$id" =~ ^[a-z0-9]+$ ]] || die "无效 id: $id"
+    case "$id" in
+        xdigest) die "xdigest 由 todo alarm digest 管理，不支持 skip" ;;
+    esac
+    line=$(s "grep '^$id|' '$ALARMS' 2>/dev/null")
+    [ -n "$line" ] || die "没有这个闹钟: $id（alarm list 查看）"
+    # 它正在响的话顺带停铃
+    [ "$(s "cat '$RUN/firing' 2>/dev/null")" = "$id" ] && cmd_stop_ring
+    spec=$(printf '%s' "$line" | cut -d'|' -f3)
+    if [ "$spec" = "once" ]; then
+        s "sed -i '/^$id|/d' '$ALARMS'"
+        audit "skip(once→rm) $id"
+        echo "已取消单次闹钟 $id"
+        return
+    fi
+    e=$(next_due_of "$id")
+    [ -n "$e" ] || die "算不出下一次触发时间"
+    s "echo '$id|$e' >> '$RUN/fired'"
+    audit "skip-next $id @ $e ($(date -d @$e '+%F %T'))"
+    echo "已跳过下一次触发（$(date -d @$e '+%F %T %A')），之后恢复正常"
+}
+
+cmd_stop() {
+    if [ -n "${1:-}" ]; then
+        cmd_skip "$1"
+    else
+        cmd_stop_ring
+    fi
 }
 
 # ----------------------------------------------------------------- test --
@@ -260,7 +322,7 @@ case "${1:-help}" in
     list|ls) cmd_list ;;
     rm|del)  shift; cmd_rm "$@" ;;
     snooze)  shift; cmd_snooze "$@" ;;
-    stop)    cmd_stop ;;
+    stop|off) shift; cmd_stop "$@" ;;
     kill)    cmd_kill ;;
     test)    cmd_test ;;
     sound)   shift; cmd_sound "$@" ;;
